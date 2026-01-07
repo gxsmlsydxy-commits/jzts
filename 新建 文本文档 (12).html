@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>监测精准推送运营管理后台</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <!-- 核心逻辑脚本 (移至头部以确保在Alpine初始化前加载) -->
+    <script>
+        function appData() {
+            return {
+                currentView: 'list',
+                searchQuery: '',
+                showConfirmModal: false,
+                showLibraryModal: false, 
+                showToast: false,
+                toastMessage: '',
+                tempDepartment: '', 
+                
+                // --- 规则库相关状态 ---
+                editingLevel: '',
+                editingRuleType: '',
+                activeLibraryTab: '',
+                tempSelectedItems: [],
+
+                // 模拟规则库数据
+                libraryData: {
+                    event: [
+                        { name: '政治安全', items: ['政权安全', '制度安全', '意识形态'] },
+                        { name: '社会治安', items: ['群体性事件', '重大刑事案件', '涉恐涉爆', '黄赌毒'] },
+                        { name: '矛盾纠纷', items: ['劳资纠纷', '征地拆迁', '医疗纠纷', '教育纠纷', '物业管理'] },
+                        { name: '公共安全', items: ['重大安全事故', '交通运输事故', '火灾事故', '食品药品安全'] },
+                        { name: '网络生态', items: ['网络谣言', '有害信息', '网络暴力'] }
+                    ],
+                    feature: [
+                        { name: '传播属性', items: ['央媒报道', '省媒报道', '阅读量>10w+', '转发量>5000'] },
+                        { name: '职能特征', items: ['涉人员死亡', '涉人员受伤', '涉未成年人', '涉学生群体'] }
+                    ]
+                },
+
+                // 模拟组织数据
+                orgs: [
+                    { id: 1, name: '深圳市网信办', areas: ['深圳市'], department: '网信办', status: 'configured' },
+                    { id: 2, name: '深圳市公安局', areas: ['深圳市'], department: '公安局', status: 'configured' },
+                    { id: 3, name: '深圳市生态环境局', areas: ['深圳市'], department: '生态环境局', status: 'unconfigured' },
+                    { id: 4, name: '海淀区教育局', areas: ['北京市海淀区'], department: '教育局', status: 'configured' },
+                    { id: 5, name: '上海市民政局', areas: [], department: '', status: 'unconfigured' },
+                ],
+                
+                // 当前编辑对象
+                editingOrg: {
+                    id: null,
+                    name: '',
+                    areas: [],
+                    department: '',
+                    status: '',
+                    strategies: {
+                        major: { event: [], feature: [] },
+                        large: { event: [], feature: [] },
+                        sensitive: { event: [], feature: [] },
+                        general: { event: [], feature: [] },
+                        chat: { event: [], feature: [] }
+                    },
+                    // 重构后的接收配置结构
+                    receiveConfig: {
+                        pushEnabled: true,  // 总开关
+                        dedupSimilar: true, // 相似文章去重
+                        dedupEvent: true,   // 事件去重
+                        missedPush: false,  // 补推机制
+                        timeSlots: [],      // 接收时段列表
+                        resources: {        // 接收资源
+                            smsNumbers: [],
+                            groups: [],
+                            appUsers: []
+                        }
+                    }
+                },
+
+                // 默认接收配置模板
+                defaultReceiveConfig: {
+                    pushEnabled: true,
+                    dedupSimilar: true,
+                    dedupEvent: true,
+                    missedPush: true,
+                    timeSlots: [
+                        { 
+                            id: 1, 
+                            type: 'daily', // daily, workday, holiday
+                            start: '00:00', 
+                            end: '23:59', 
+                            threshold: 'major', // major, large, sensitive, general, chat
+                            channels: ['sms', 'app', 'group'] 
+                        }
+                    ],
+                    resources: {
+                        smsNumbers: ['13800138000', '13912345678'],
+                        groups: [{name: '舆情应急处置群', type: 'WeChat'}, {name: '指挥中心大屏群', type: 'DingTalk'}],
+                        appUsers: [{name: '张局长', role: '负责人'}, {name: '李主任', role: '经办人'}]
+                    }
+                },
+
+                // 下拉选项定义
+                periodOptions: [
+                    { value: 'daily', label: '每天' },
+                    { value: 'workday', label: '工作日' },
+                    { value: 'holiday', label: '节假日' }
+                ],
+                thresholdOptions: [
+                    { value: 'major', label: '仅重大舆情' },
+                    { value: 'large', label: '较大舆情及以上' },
+                    { value: 'sensitive', label: '敏感舆情及以上' },
+                    { value: 'general', label: '一般舆情及以' },
+                    { value: 'chat', label: '交流舆情及以上' }
+                ],
+
+                init() {
+                    setTimeout(() => { if (window.lucide) window.lucide.createIcons(); }, 100);
+                    this.$watch('currentView', () => setTimeout(() => { if (window.lucide) window.lucide.createIcons(); }, 50));
+                    this.$watch('showLibraryModal', () => setTimeout(() => { if (window.lucide) window.lucide.createIcons(); }, 50));
+                    this.$watch('editingOrg.receiveConfig.timeSlots', () => setTimeout(() => lucide.createIcons(), 50));
+                    this.$watch('editingOrg.receiveConfig.pushEnabled', () => setTimeout(() => lucide.createIcons(), 50));
+                },
+
+                get filteredOrgs() {
+                    if (!this.searchQuery) return this.orgs;
+                    return this.orgs.filter(org => org.name.includes(this.searchQuery));
+                },
+
+                get currentLibraryTabs() {
+                    return this.libraryData[this.editingRuleType] || [];
+                },
+
+                get currentTabItems() {
+                    const tab = this.currentLibraryTabs.find(t => t.name === this.activeLibraryTab);
+                    return tab ? tab.items : [];
+                },
+                
+                get isAllSelected() {
+                    if (this.currentTabItems.length === 0) return false;
+                    return this.currentTabItems.every(item => this.tempSelectedItems.includes(item));
+                },
+
+                openDetail(org) {
+                    let orgCopy = JSON.parse(JSON.stringify(org));
+                    
+                    if (!orgCopy.strategies || Object.keys(orgCopy.strategies).length === 0) {
+                        orgCopy.strategies = {
+                            major: { event: ['群体性事件', '重大安全事故'], feature: ['央媒报道', '阅读量>10w+'] },
+                            large: { event: ['实名举报', '环境污染'], feature: ['省媒报道', '评论>1000'] },
+                            sensitive: { event: ['行政执法争议'], feature: ['旅游'] },
+                            general: { event: ['交通事故'], feature: ['涉未成年人'] },
+                            chat: { event: ['咨询求助', '建议意见'], feature: [] }
+                        };
+                    }
+
+                    if (!orgCopy.receiveConfig || !orgCopy.receiveConfig.timeSlots) {
+                        orgCopy.receiveConfig = JSON.parse(JSON.stringify(this.defaultReceiveConfig));
+                    }
+
+                    this.editingOrg = orgCopy;
+                    this.tempDepartment = this.editingOrg.department;
+                    this.currentView = 'detail';
+                },
+
+                handleDeptChange(event) {
+                    const newDept = event.target.value;
+                    if (!this.editingOrg.department) {
+                        this.editingOrg.department = newDept;
+                        this.showNotification(`已加载 ${newDept} 默认舆情等级策略模板`);
+                        return;
+                    }
+                    this.showConfirmModal = true;
+                },
+
+                confirmDeptChange() {
+                    this.editingOrg.department = this.tempDepartment;
+                    this.showConfirmModal = false;
+                    this.showNotification(`已切换至 ${this.tempDepartment}，策略模板已更新`);
+                },
+
+                cancelDeptChange() {
+                    this.tempDepartment = this.editingOrg.department;
+                    this.showConfirmModal = false;
+                },
+
+                removeArea(index) {
+                    this.editingOrg.areas.splice(index, 1);
+                },
+                
+                openAreaModal() {
+                    alert('点击此处将打开树形区域选择弹窗（原型演示：点击添加区域）');
+                    this.editingOrg.areas.push('新选择区域');
+                },
+
+                // --- 规则库交互 ---
+                openLibraryModal(level, type) {
+                    this.editingLevel = level;
+                    this.editingRuleType = type;
+                    this.activeLibraryTab = this.libraryData[type][0].name;
+                    this.tempSelectedItems = [...this.editingOrg.strategies[level][type]];
+                    this.showLibraryModal = true;
+                },
+
+                toggleLibraryItem(item) {
+                    const index = this.tempSelectedItems.indexOf(item);
+                    if (index > -1) {
+                        this.tempSelectedItems.splice(index, 1);
+                    } else {
+                        this.tempSelectedItems.push(item);
+                    }
+                },
+                
+                toggleSelectAll() {
+                    if (this.isAllSelected) {
+                        this.tempSelectedItems = this.tempSelectedItems.filter(item => !this.currentTabItems.includes(item));
+                    } else {
+                        const newItems = this.currentTabItems.filter(item => !this.tempSelectedItems.includes(item));
+                        this.tempSelectedItems.push(...newItems);
+                    }
+                },
+
+                saveLibrarySelection() {
+                    this.editingOrg.strategies[this.editingLevel][this.editingRuleType] = [...this.tempSelectedItems];
+                    this.showLibraryModal = false;
+                    this.showNotification('规则配置已更新');
+                },
+
+                removeStrategyItem(level, type, index) {
+                    this.editingOrg.strategies[level][type].splice(index, 1);
+                },
+
+                // --- 接收时段配置 ---
+                addTimeSlot() {
+                    this.editingOrg.receiveConfig.timeSlots.push({
+                        id: Date.now(),
+                        type: 'workday',
+                        start: '09:00',
+                        end: '18:00',
+                        threshold: 'sensitive',
+                        channels: ['app']
+                    });
+                },
+
+                removeTimeSlot(index) {
+                    this.editingOrg.receiveConfig.timeSlots.splice(index, 1);
+                },
+
+                toggleTimeSlotChannel(slotIndex, channel) {
+                    const channels = this.editingOrg.receiveConfig.timeSlots[slotIndex].channels;
+                    const idx = channels.indexOf(channel);
+                    if (idx > -1) {
+                        channels.splice(idx, 1);
+                    } else {
+                        channels.push(channel);
+                    }
+                },
+
+                // --- 资源配置交互 ---
+                addPhoneNumber() {
+                    const num = prompt("请输入要添加的手机号码：");
+                    if (num && /^1[3-9]\d{9}$/.test(num)) {
+                        if (!this.editingOrg.receiveConfig.resources.smsNumbers.includes(num)) {
+                            this.editingOrg.receiveConfig.resources.smsNumbers.push(num);
+                        } else {
+                            alert("该号码已存在");
+                        }
+                    } else if (num) {
+                        alert("请输入有效的11位手机号码");
+                    }
+                },
+                
+                removePhoneNumber(index) {
+                    this.editingOrg.receiveConfig.resources.smsNumbers.splice(index, 1);
+                },
+
+                addGroup() {
+                    const name = prompt("请输入群组名称（模拟绑定群ID）：");
+                    if (name) {
+                        this.editingOrg.receiveConfig.resources.groups.push({
+                            name: name,
+                            type: Math.random() > 0.5 ? 'WeChat' : 'DingTalk'
+                        });
+                    }
+                },
+
+                removeGroup(index) {
+                    this.editingOrg.receiveConfig.resources.groups.splice(index, 1);
+                },
+                // --------------------
+
+                saveConfig() {
+                    const index = this.orgs.findIndex(o => o.id === this.editingOrg.id);
+                    if (index !== -1) {
+                        this.editingOrg.status = 'configured';
+                        this.orgs[index] = JSON.parse(JSON.stringify(this.editingOrg));
+                    }
+                    this.showNotification('配置已保存成功');
+                    setTimeout(() => {
+                        this.currentView = 'list';
+                    }, 1000);
+                },
+
+                showNotification(msg) {
+                    this.toastMessage = msg;
+                    this.showToast = true;
+                    setTimeout(() => this.showToast = false, 3000);
+                }
+            }
+        }
+    </script>
+
+    <!-- Alpine.js -->
+    <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+
+    <style>
+        /* 高级感 UI 定制 */
+        body {
+            /* 浅蓝+白色渐变风格背景 */
+            background: linear-gradient(135deg, #f0f4ff 0%, #ffffff 50%, #f8fafc 100%);
+        }
+
+        /* 侧边栏深色玻璃质感 */
+        .sidebar-gradient {
+            background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+        }
+
+        /* 玻璃拟态卡片 */
+        .glass-card {
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+        }
+        .glass-card:hover {
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.025);
+            transform: translateY(-2px);
+            transition: all 0.3s ease;
+        }
+
+        /* 按钮动效 */
+        .btn-primary {
+            background: linear-gradient(90deg, #2563eb 0%, #3b82f6 100%);
+            box-shadow: 0 4px 6px rgba(37, 99, 235, 0.2);
+            transition: all 0.3s ease;
+        }
+        .btn-primary:hover {
+            box-shadow: 0 8px 12px rgba(37, 99, 235, 0.3);
+            transform: translateY(-1px);
+        }
+        .btn-secondary {
+            background: white;
+            border: 1px solid #e2e8f0;
+            color: #475569;
+            transition: all 0.2s ease;
+        }
+        .btn-secondary:hover {
+            background: #f8fafc;
+            border-color: #cbd5e1;
+            color: #1e293b;
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+        /* Level Cards Border Style */
+        .level-card-major { border-left: 4px solid #ef4444; }
+        .level-card-large { border-left: 4px solid #f97316; }
+        .level-card-sensitive { border-left: 4px solid #eab308; }
+        .level-card-general { border-left: 4px solid #3b82f6; }
+        .level-card-chat { border-left: 4px solid #9ca3af; }
+
+        /* Smooth Toggle */
+        .toggle-checkbox:checked {
+            right: 0;
+            border-color: #3b82f6;
+        }
+        .toggle-checkbox:checked + .toggle-label {
+            background-color: #3b82f6;
+        }
+        
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="text-slate-800 font-sans h-screen flex overflow-hidden" x-data="appData()">
+
+    <!-- 侧边栏 -->
+    <aside class="w-64 sidebar-gradient text-white flex flex-col flex-shrink-0 shadow-2xl relative z-20">
+        <div class="h-16 flex items-center justify-center border-b border-slate-700/50 shadow-sm">
+            <div class="flex items-center gap-3 font-bold text-xl tracking-tight">
+                <div class="p-1.5 bg-blue-500/20 rounded-lg">
+                    <i data-lucide="radar" class="text-blue-400 w-6 h-6"></i>
+                </div>
+                <span class="text-transparent bg-clip-text bg-gradient-to-r from-blue-200 to-white">监测运营平台</span>
+            </div>
+        </div>
+
+        <!-- 侧边栏菜单 -->
+        <nav class="flex-1 overflow-y-auto py-6">
+            <ul class="space-y-2 px-3">
+                <li>
+                    <a href="#" class="flex items-center gap-3 px-4 py-3 bg-gradient-to-r from-blue-600 to-blue-500 text-white shadow-lg shadow-blue-900/50 rounded-xl relative group overflow-hidden">
+                        <div class="absolute inset-0 bg-white/10 translate-x-[-100%] group-hover:translate-x-[100%] transition-transform duration-700 ease-in-out"></div>
+                        <i data-lucide="settings-2" class="w-5 h-5"></i>
+                        <span class="font-medium">精准推送管理</span>
+                    </a>
+                </li>
+            </ul>
+        </nav>
+
+        <div class="p-4 border-t border-slate-700/50 bg-slate-900/50 backdrop-blur-md">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-xs font-bold shadow-lg ring-2 ring-slate-700">Admin</div>
+                <div class="text-sm">
+                    <p class="font-medium text-slate-200">系统管理员</p>
+                    <p class="text-slate-400 text-xs">运营中心</p>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- 主内容区 -->
+    <main class="flex-1 flex flex-col h-full min-w-0 overflow-hidden relative">
+        
+        <!-- 顶部导航 -->
+        <header class="h-16 bg-white/80 backdrop-blur-md border-b border-blue-100 flex items-center justify-between px-8 flex-shrink-0 z-10 shadow-sm">
+            <div class="text-sm breadcrumbs text-slate-500 flex items-center gap-2">
+                <span class="hover:text-blue-600 transition-colors cursor-pointer">首页</span>
+                <i data-lucide="chevron-right" class="w-4 h-4 text-slate-300"></i>
+                <span class="hover:text-blue-600 transition-colors cursor-pointer">运营管理</span>
+                <i data-lucide="chevron-right" class="w-4 h-4 text-slate-300"></i>
+                <span class="font-bold text-slate-800 bg-blue-50 px-2 py-0.5 rounded text-blue-700">精准推送配置</span>
+            </div>
+            <div class="flex items-center gap-4">
+                <button class="p-2.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-all duration-300 relative group">
+                    <i data-lucide="bell" class="w-5 h-5"></i>
+                    <span class="absolute top-2 right-2.5 w-2 h-2 bg-red-500 rounded-full border border-white"></span>
+                </button>
+            </div>
+        </header>
+
+        <!-- 页面内容容器 -->
+        <div class="flex-1 overflow-y-auto p-8 relative scroll-smooth">
+            
+            <!-- 场景1：组织列表视图 -->
+            <div x-show="currentView === 'list'" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 transform translate-y-4" x-transition:enter-end="opacity-100 transform translate-y-0">
+                
+                <div class="mb-8 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                    <div>
+                        <h1 class="text-2xl font-bold text-slate-800 tracking-tight">组织画像配置</h1>
+                        <p class="text-slate-500 text-sm mt-2">管理各委办局的监测关注区域、职能部门属性及舆情推送策略。</p>
+                    </div>
+                </div>
+
+                <!-- 搜索栏 -->
+                <div class="glass-card rounded-xl p-1.5 mb-6 flex items-center gap-2">
+                    <div class="relative flex-1">
+                        <i data-lucide="search" class="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4"></i>
+                        <input type="text" x-model="searchQuery" placeholder="请输入组织名称关键词检索..." class="w-full pl-10 pr-4 py-3 bg-transparent border-none focus:ring-0 text-sm text-slate-700 placeholder-slate-400">
+                    </div>
+                    <button class="btn-primary text-white px-6 py-2.5 rounded-lg text-sm font-medium flex items-center gap-2">
+                        <i data-lucide="filter" class="w-4 h-4"></i> 筛选
+                    </button>
+                </div>
+
+                <!-- 表格 -->
+                <div class="glass-card rounded-xl overflow-hidden">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="bg-slate-50/80 border-b border-slate-100">
+                            <tr>
+                                <th class="p-5 text-xs font-semibold text-slate-500 uppercase tracking-wider w-1/4">组织名称</th>
+                                <th class="p-5 text-xs font-semibold text-slate-500 uppercase tracking-wider w-1/3">关注区域</th>
+                                <th class="p-5 text-xs font-semibold text-slate-500 uppercase tracking-wider">职能部门</th>
+                                <th class="p-5 text-xs font-semibold text-slate-500 uppercase tracking-wider">配置状态</th>
+                                <th class="p-5 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <template x-for="org in filteredOrgs" :key="org.id">
+                                <tr class="hover:bg-blue-50/40 transition-colors group">
+                                    <td class="p-5">
+                                        <div class="flex items-center gap-4">
+                                            <div class="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-100 to-blue-50 text-blue-600 flex items-center justify-center font-bold text-sm shadow-sm" x-text="org.name.substring(0,1)"></div>
+                                            <span class="font-medium text-slate-800" x-text="org.name"></span>
+                                        </div>
+                                    </td>
+                                    <td class="p-5 text-sm text-slate-600">
+                                        <div class="max-w-md truncate" :title="org.areas.join('；')">
+                                            <span x-text="org.areas.length > 0 ? org.areas.join('；') : '未配置'" :class="org.areas.length === 0 ? 'text-slate-400 italic' : ''"></span>
+                                        </div>
+                                    </td>
+                                    <td class="p-5 text-sm text-slate-600">
+                                        <span x-text="org.department || '--'"></span>
+                                    </td>
+                                    <td class="p-5">
+                                        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border"
+                                              :class="org.status === 'configured' ? 'bg-green-50 text-green-700 border-green-200' : 'bg-slate-50 text-slate-500 border-slate-200'">
+                                            <span class="w-1.5 h-1.5 rounded-full" :class="org.status === 'configured' ? 'bg-green-500' : 'bg-slate-400'"></span>
+                                            <span x-text="org.status === 'configured' ? '已配置' : '未配置'"></span>
+                                        </span>
+                                    </td>
+                                    <td class="p-5 text-right">
+                                        <button @click="openDetail(org)" class="text-blue-600 hover:text-blue-700 font-medium text-sm px-4 py-1.5 rounded-lg bg-blue-50/50 hover:bg-blue-100 transition-all">
+                                            配置
+                                        </button>
+                                    </td>
+                                </tr>
+                            </template>
+                            <tr x-show="filteredOrgs.length === 0">
+                                <td colspan="5" class="p-12 text-center text-slate-400">
+                                    <div class="flex flex-col items-center justify-center">
+                                        <i data-lucide="search-x" class="w-12 h-12 mb-3 opacity-30"></i>
+                                        <span>未找到相关组织</span>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <!-- 分页模拟 -->
+                    <div class="p-5 border-t border-slate-100 flex justify-between items-center text-sm text-slate-500">
+                        <span>共 <span x-text="filteredOrgs.length" class="font-bold text-slate-700"></span> 条数据</span>
+                        <div class="flex gap-2">
+                            <button class="px-3 py-1.5 border border-slate-200 rounded-md disabled:opacity-50 hover:bg-slate-50 transition-colors" disabled>上一页</button>
+                            <button class="px-3 py-1.5 border border-slate-200 rounded-md hover:bg-slate-50 transition-colors">下一页</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 场景2：配置详情视图 -->
+            <div x-show="currentView === 'detail'" x-cloak x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 transform translate-x-8" x-transition:enter-end="opacity-100 transform translate-x-0">
+                
+                <!-- 详情页头部 -->
+                <div class="flex items-center justify-between mb-8 sticky top-0 bg-white/80 backdrop-blur-md z-10 py-4 border-b border-blue-50/50 -mx-8 px-8 shadow-sm">
+                    <div class="flex items-center gap-4">
+                        <button @click="currentView = 'list'" class="p-2 hover:bg-slate-100 rounded-full transition-colors text-slate-500">
+                            <i data-lucide="arrow-left" class="w-5 h-5"></i>
+                        </button>
+                        <div>
+                            <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                                <span x-text="editingOrg?.name"></span>
+                                <span class="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full border border-blue-200 font-normal">画像配置及精准接收</span>
+                            </h2>
+                        </div>
+                    </div>
+                    <div class="flex gap-3">
+                        <button @click="currentView = 'list'" class="btn-secondary px-5 py-2 rounded-lg text-sm font-medium shadow-sm">取消</button>
+                        <button @click="saveConfig()" class="btn-primary text-white px-6 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+                            <i data-lucide="save" class="w-4 h-4"></i> 保存配置
+                        </button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-12 gap-8">
+                    
+                    <!-- 左侧锚点导航 -->
+                    <div class="col-span-2 hidden lg:block">
+                        <div class="sticky top-28 space-y-1">
+                            <a href="#section-basic" class="block px-4 py-2.5 text-sm font-medium rounded-xl text-blue-700 bg-blue-50/80 border border-blue-100 shadow-sm transition-all hover:translate-x-1">基础画像设置</a>
+                            <a href="#section-strategy" class="block px-4 py-2.5 text-sm font-medium rounded-xl text-slate-600 hover:bg-white hover:shadow-sm hover:text-blue-600 transition-all hover:translate-x-1">等级策略配置</a>
+                            <a href="#section-receive" class="block px-4 py-2.5 text-sm font-medium rounded-xl text-slate-600 hover:bg-white hover:shadow-sm hover:text-blue-600 transition-all hover:translate-x-1">接收设置</a>
+                        </div>
+                    </div>
+
+                    <!-- 右侧表单内容 -->
+                    <div class="col-span-12 lg:col-span-10 space-y-8 pb-20">
+                        
+                        <!-- 1. 基础画像设置 -->
+                        <section id="section-basic" class="glass-card rounded-2xl p-8">
+                            <div class="flex items-center gap-3 mb-8 pb-4 border-b border-slate-100">
+                                <div class="w-10 h-10 rounded-lg bg-blue-100 flex items-center justify-center text-blue-600 shadow-inner">
+                                    <i data-lucide="user-check" class="w-5 h-5"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-bold text-slate-800">基础画像设置</h3>
+                                    <p class="text-xs text-slate-400 mt-0.5">Define the basic profile and scope</p>
+                                </div>
+                            </div>
+
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-10">
+                                <div>
+                                    <label class="block text-sm font-bold text-slate-700 mb-2">关注区域 <span class="text-red-500">*</span></label>
+                                    <p class="text-xs text-slate-500 mb-3">配置该组织重点关注的行政区域，支持跨省/市多选作为数据范围依据。</p>
+                                    <div class="border border-slate-200 rounded-xl p-4 min-h-[120px] bg-slate-50/50 hover:bg-white hover:border-blue-300 hover:shadow-md transition-all cursor-pointer relative group" @click="openAreaModal()">
+                                        <div class="flex flex-wrap gap-2">
+                                            <template x-for="(area, idx) in editingOrg.areas">
+                                                <span class="inline-flex items-center gap-1.5 px-3 py-1 bg-white border border-slate-200 rounded-full text-sm text-slate-700 shadow-sm">
+                                                    <span x-text="area"></span>
+                                                    <button @click.stop="removeArea(idx)" class="hover:text-red-500 text-slate-400 transition-colors"><i data-lucide="x" class="w-3 h-3"></i></button>
+                                                </span>
+                                            </template>
+                                            <button class="px-3 py-1 border border-dashed border-blue-300 text-blue-600 bg-blue-50/30 rounded-full text-sm hover:bg-blue-50 transition-colors flex items-center gap-1.5">
+                                                <i data-lucide="plus" class="w-3 h-3"></i> 添加区域
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-bold text-slate-700 mb-2">职能部门 <span class="text-red-500">*</span></label>
+                                    <p class="text-xs text-slate-500 mb-3">系统将根据所选部门自动拉取预设的“默认舆情等级配置”模板。</p>
+                                    <div class="relative">
+                                        <select 
+                                            x-model="tempDepartment"
+                                            @change="handleDeptChange($event)"
+                                            class="w-full pl-4 pr-10 py-3 bg-white border border-slate-200 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent sm:text-sm appearance-none cursor-pointer transition-all hover:border-blue-300">
+                                            <option value="" disabled>请选择职能部门...</option>
+                                            <option value="网信办">网信办</option>
+                                            <option value="公安局">公安局</option>
+                                            <option value="民政局">民政局</option>
+                                            <option value="生态环境局">生态环境局</option>
+                                            <option value="交通运输局">交通运输局</option>
+                                            <option value="教育局">教育局</option>
+                                        </select>
+                                        <div class="absolute inset-y-0 right-0 flex items-center px-3 pointer-events-none">
+                                            <i data-lucide="chevron-down" class="w-4 h-4 text-slate-500"></i>
+                                        </div>
+                                    </div>
+                                    <div x-show="editingOrg.department" class="mt-4 flex items-start gap-3 bg-blue-50/50 border border-blue-100 p-3 rounded-lg text-xs text-blue-700">
+                                        <i data-lucide="info" class="w-4 h-4 mt-0.5 flex-shrink-0 text-blue-500"></i>
+                                        <p>当前策略已继承自 <strong class="font-semibold"><span x-text="editingOrg.department"></span></strong> 模板。如需修改请切换部门，切换将覆盖当前已有配置。</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- 2. 等级策略配置 -->
+                        <section id="section-strategy" class="glass-card rounded-2xl p-8">
+                            <div class="flex items-center justify-between mb-8 pb-4 border-b border-slate-100">
+                                <div class="flex items-center gap-3">
+                                    <div class="w-10 h-10 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600 shadow-inner">
+                                        <i data-lucide="shield-alert" class="w-5 h-5"></i>
+                                    </div>
+                                    <div>
+                                        <h3 class="text-lg font-bold text-slate-800">等级策略配置</h3>
+                                        <p class="text-xs text-slate-400 mt-0.5">Configuration of risk levels rules</p>
+                                    </div>
+                                </div>
+                                <div class="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 px-4 py-2 rounded-full border border-slate-100 shadow-sm">
+                                    <i data-lucide="alert-circle" class="w-3 h-3 text-slate-400"></i>
+                                    <span>判定逻辑：最高优先级原则（当数据同时命中多级时，取最高等级）</span>
+                                </div>
+                            </div>
+
+                            <div class="space-y-4">
+                                <div class="grid grid-cols-12 gap-4 text-xs font-bold text-slate-400 uppercase px-6">
+                                    <div class="col-span-2">舆情等级</div>
+                                    <div class="col-span-5">事件类型规则</div>
+                                    <div class="col-span-5">风险特征规则</div>
+                                </div>
+
+                                <!-- 渲染等级列表 -->
+                                <template x-for="level in ['major', 'large', 'sensitive', 'general', 'chat']">
+                                    <div class="grid grid-cols-12 gap-6 items-stretch bg-white border border-slate-100 rounded-xl p-6 shadow-sm hover:shadow-md transition-all duration-300" 
+                                         :class="{
+                                            'level-card-major': level === 'major',
+                                            'level-card-large': level === 'large',
+                                            'level-card-sensitive': level === 'sensitive',
+                                            'level-card-general': level === 'general',
+                                            'level-card-chat': level === 'chat'
+                                         }">
+                                        <!-- 等级标签 -->
+                                        <div class="col-span-2 flex items-center">
+                                            <span class="inline-flex items-center px-3 py-1 rounded-md text-xs font-bold shadow-sm"
+                                                :class="{
+                                                    'bg-red-50 text-red-700 border border-red-100': level === 'major',
+                                                    'bg-orange-50 text-orange-700 border border-orange-100': level === 'large',
+                                                    'bg-yellow-50 text-yellow-700 border border-yellow-100': level === 'sensitive',
+                                                    'bg-blue-50 text-blue-700 border border-blue-100': level === 'general',
+                                                    'bg-slate-50 text-slate-600 border border-slate-100': level === 'chat'
+                                                }">
+                                                <span x-text="{major:'重大舆情', large:'较大舆情', sensitive:'敏感舆情', general:'一般舆情', chat:'交流舆情'}[level]"></span>
+                                            </span>
+                                        </div>
+
+                                        <!-- 事件类型 -->
+                                        <div class="col-span-5 border-l border-dashed border-slate-200 pl-6">
+                                            <div class="flex flex-wrap gap-2 items-center">
+                                                <template x-for="(item, idx) in editingOrg.strategies[level].event">
+                                                    <span class="px-3 py-1 bg-slate-50 border border-slate-200 text-slate-700 rounded-full text-xs flex items-center gap-1.5 group hover:bg-white hover:border-blue-200 hover:text-blue-600 transition-colors shadow-sm">
+                                                        <span x-text="item"></span>
+                                                        <button @click="removeStrategyItem(level, 'event', idx)" class="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><i data-lucide="x" class="w-3 h-3"></i></button>
+                                                    </span>
+                                                </template>
+                                                <!-- 添加按钮 -->
+                                                <button @click="openLibraryModal(level, 'event')" class="px-3 py-1 border border-dashed border-slate-300 text-slate-400 rounded-full text-xs hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50 transition-colors flex items-center gap-1">
+                                                    <i data-lucide="plus" class="w-3 h-3"></i> 添加
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <!-- 风险特征 -->
+                                        <div class="col-span-5 border-l border-dashed border-slate-200 pl-6">
+                                            <div class="flex flex-wrap gap-2 items-center">
+                                                <template x-for="(item, idx) in editingOrg.strategies[level].feature">
+                                                    <span class="px-3 py-1 bg-slate-50 border border-slate-200 text-slate-700 rounded-full text-xs flex items-center gap-1.5 group hover:bg-white hover:border-blue-200 hover:text-blue-600 transition-colors shadow-sm">
+                                                        <span x-text="item"></span>
+                                                        <button @click="removeStrategyItem(level, 'feature', idx)" class="text-slate-300 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><i data-lucide="x" class="w-3 h-3"></i></button>
+                                                    </span>
+                                                </template>
+                                                <!-- 添加按钮 -->
+                                                <button @click="openLibraryModal(level, 'feature')" class="px-3 py-1 border border-dashed border-slate-300 text-slate-400 rounded-full text-xs hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50 transition-colors flex items-center gap-1">
+                                                    <i data-lucide="plus" class="w-3 h-3"></i> 添加
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </section>
+
+                        <!-- 3. 接收设置 -->
+                        <section id="section-receive" class="glass-card rounded-2xl p-8 mb-10">
+                            <div class="flex items-center gap-3 mb-8 pb-4 border-b border-slate-100">
+                                <div class="w-10 h-10 rounded-lg bg-purple-100 flex items-center justify-center text-purple-600 shadow-inner">
+                                    <i data-lucide="send" class="w-5 h-5"></i>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-bold text-slate-800">接收设置</h3>
+                                    <p class="text-xs text-slate-400 mt-0.5">Message delivery channels and rules</p>
+                                </div>
+                            </div>
+                            
+                            <!-- 新增推送总开关 -->
+                            <div class="flex items-center justify-between p-6 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-100 rounded-xl mb-8 shadow-sm">
+                                <div class="flex items-center gap-4">
+                                    <div class="p-3 bg-white rounded-full text-blue-600 shadow-sm">
+                                        <i data-lucide="bell-ring" class="w-6 h-6"></i>
+                                    </div>
+                                    <div>
+                                        <h4 class="font-bold text-slate-800 text-base">精准推送总开关</h4>
+                                        <p class="text-sm text-slate-500 mt-1">关闭后，该组织将暂停接收所有渠道的舆情推送消息</p>
+                                    </div>
+                                </div>
+                                <div class="relative inline-block w-14 mr-2 align-middle select-none transition duration-200 ease-in">
+                                    <input type="checkbox" name="toggle" id="toggle-master-push" 
+                                           class="toggle-checkbox absolute block w-8 h-8 rounded-full bg-white border-4 appearance-none cursor-pointer shadow-md"
+                                           x-model="editingOrg.receiveConfig.pushEnabled"/>
+                                    <label for="toggle-master-push" class="toggle-label block overflow-hidden h-8 rounded-full bg-slate-200 cursor-pointer"></label>
+                                </div>
+                            </div>
+
+                            <!-- 接收详情配置容器 -->
+                            <div x-show="editingOrg.receiveConfig.pushEnabled" 
+                                 x-transition:enter="transition ease-out duration-300"
+                                 x-transition:enter-start="opacity-0 -translate-y-4"
+                                 x-transition:enter-end="opacity-100 translate-y-0"
+                                 x-transition:leave="transition ease-in duration-200"
+                                 x-transition:leave-start="opacity-100 translate-y-0"
+                                 x-transition:leave-end="opacity-0 -translate-y-4"
+                                 class="space-y-10">
+                                
+                                <!-- 1. 基础控制开关 -->
+                                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                    <div class="flex items-center justify-between p-5 border border-slate-100 rounded-xl bg-white shadow-sm hover:shadow-md transition-shadow">
+                                        <div class="flex flex-col">
+                                            <span class="font-bold text-sm text-slate-700">相似文章去重</span>
+                                            <span class="text-xs text-slate-400 mt-1">合并内容高度相似的报道</span>
+                                        </div>
+                                        <div class="relative inline-block w-10 align-middle select-none">
+                                            <input type="checkbox" id="dedup-similar" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer shadow-sm" x-model="editingOrg.receiveConfig.dedupSimilar"/>
+                                            <label for="dedup-similar" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-200 cursor-pointer"></label>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center justify-between p-5 border border-slate-100 rounded-xl bg-white shadow-sm hover:shadow-md transition-shadow">
+                                        <div class="flex flex-col">
+                                            <span class="font-bold text-sm text-slate-700">同事件去重</span>
+                                            <span class="text-xs text-slate-400 mt-1">同一事件仅推送首发预警</span>
+                                        </div>
+                                        <div class="relative inline-block w-10 align-middle select-none">
+                                            <input type="checkbox" id="dedup-event" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer shadow-sm" x-model="editingOrg.receiveConfig.dedupEvent"/>
+                                            <label for="dedup-event" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-200 cursor-pointer"></label>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center justify-between p-5 border border-slate-100 rounded-xl bg-white shadow-sm hover:shadow-md transition-shadow">
+                                        <div class="flex flex-col">
+                                            <span class="font-bold text-sm text-slate-700">非接收时段补推</span>
+                                            <span class="text-xs text-slate-400 mt-1">在次日接收时段开始时补发</span>
+                                        </div>
+                                        <div class="relative inline-block w-10 align-middle select-none">
+                                            <input type="checkbox" id="missed-push" class="toggle-checkbox absolute block w-6 h-6 rounded-full bg-white border-4 appearance-none cursor-pointer shadow-sm" x-model="editingOrg.receiveConfig.missedPush"/>
+                                            <label for="missed-push" class="toggle-label block overflow-hidden h-6 rounded-full bg-slate-200 cursor-pointer"></label>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <!-- 2. 接收时段配置 (核心) -->
+                                <div>
+                                    <div class="flex items-center justify-between mb-4">
+                                        <div class="flex items-center gap-2">
+                                            <div class="w-1 h-4 bg-blue-600 rounded-full"></div>
+                                            <label class="text-sm font-bold text-slate-800">接收时段策略配置</label>
+                                        </div>
+                                        <button @click="addTimeSlot()" class="text-blue-600 hover:text-blue-800 text-xs font-bold flex items-center gap-1 bg-blue-50 px-3 py-1.5 rounded-full hover:bg-blue-100 transition-colors">
+                                            <i data-lucide="plus-circle" class="w-4 h-4"></i> 添加时段
+                                        </button>
+                                    </div>
+                                    
+                                    <div class="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                                        <table class="w-full text-left text-sm">
+                                            <thead class="bg-slate-50 border-b border-slate-200 text-slate-500">
+                                                <tr>
+                                                    <th class="px-6 py-4 font-semibold w-32">周期类型</th>
+                                                    <th class="px-6 py-4 font-semibold w-48">具体时间段</th>
+                                                    <th class="px-6 py-4 font-semibold w-48">最大舆情等级门槛</th>
+                                                    <th class="px-6 py-4 font-semibold">接收渠道</th>
+                                                    <th class="px-6 py-4 font-semibold w-24 text-center">操作</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y divide-slate-100 bg-white">
+                                                <template x-for="(slot, index) in editingOrg.receiveConfig.timeSlots" :key="slot.id">
+                                                    <tr class="hover:bg-slate-50/50 transition-colors">
+                                                        <td class="px-6 py-4">
+                                                            <select x-model="slot.type" class="w-full border-slate-200 border rounded-lg text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-slate-50/50 hover:bg-white transition-colors">
+                                                                <template x-for="opt in periodOptions">
+                                                                    <option :value="opt.value" x-text="opt.label"></option>
+                                                                </template>
+                                                            </select>
+                                                        </td>
+                                                        <td class="px-6 py-4">
+                                                            <div class="flex items-center gap-2 bg-slate-50/50 border border-slate-200 rounded-lg p-1 w-fit">
+                                                                <input type="time" x-model="slot.start" class="bg-transparent border-none rounded px-2 py-1 text-sm w-24 focus:ring-0 text-center font-medium text-slate-700">
+                                                                <span class="text-slate-400">-</span>
+                                                                <input type="time" x-model="slot.end" class="bg-transparent border-none rounded px-2 py-1 text-sm w-24 focus:ring-0 text-center font-medium text-slate-700">
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-6 py-4">
+                                                            <select x-model="slot.threshold" class="w-full border-slate-200 border rounded-lg text-sm py-2 px-3 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none bg-slate-50/50 hover:bg-white transition-colors">
+                                                                <template x-for="opt in thresholdOptions">
+                                                                    <option :value="opt.value" x-text="opt.label"></option>
+                                                                </template>
+                                                            </select>
+                                                        </td>
+                                                        <td class="px-6 py-4">
+                                                            <div class="flex gap-4">
+                                                                <label class="flex items-center gap-2 cursor-pointer group">
+                                                                    <input type="checkbox" class="text-blue-600 rounded focus:ring-blue-500 w-4 h-4 border-slate-300" 
+                                                                           :checked="slot.channels.includes('sms')" 
+                                                                           @change="toggleTimeSlotChannel(index, 'sms')">
+                                                                    <span class="group-hover:text-blue-600 transition-colors">短信</span>
+                                                                </label>
+                                                                <label class="flex items-center gap-2 cursor-pointer group">
+                                                                    <input type="checkbox" class="text-blue-600 rounded focus:ring-blue-500 w-4 h-4 border-slate-300"
+                                                                           :checked="slot.channels.includes('group')" 
+                                                                           @change="toggleTimeSlotChannel(index, 'group')">
+                                                                    <span class="group-hover:text-blue-600 transition-colors">群消息</span>
+                                                                </label>
+                                                                <label class="flex items-center gap-2 cursor-pointer group">
+                                                                    <input type="checkbox" class="text-blue-600 rounded focus:ring-blue-500 w-4 h-4 border-slate-300"
+                                                                           :checked="slot.channels.includes('app')" 
+                                                                           @change="toggleTimeSlotChannel(index, 'app')">
+                                                                    <span class="group-hover:text-blue-600 transition-colors">微信服务号</span>
+                                                                </label>
+                                                            </div>
+                                                        </td>
+                                                        <td class="px-6 py-4 text-center">
+                                                            <button @click="removeTimeSlot(index)" class="text-slate-400 hover:text-red-500 hover:bg-red-50 p-2 rounded-lg transition-all">
+                                                                <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                                            </button>
+                                                        </td>
+                                                    </tr>
+                                                </template>
+                                                <tr x-show="editingOrg.receiveConfig.timeSlots.length === 0">
+                                                    <td colspan="5" class="px-6 py-10 text-center text-slate-400 italic bg-slate-50/30">
+                                                        <div class="flex flex-col items-center">
+                                                            <i data-lucide="clock" class="w-8 h-8 mb-2 opacity-20"></i>
+                                                            暂无配置，请添加接收时段
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <!-- 3. 接收资源配置 (分离) -->
+                                <div>
+                                    <div class="flex items-center justify-between mb-4">
+                                        <div class="flex items-center gap-2">
+                                            <div class="w-1 h-4 bg-purple-600 rounded-full"></div>
+                                            <label class="text-sm font-bold text-slate-800">接收资源配置</label>
+                                        </div>
+                                        <span class="text-xs text-slate-400 bg-slate-100 px-2 py-1 rounded">配置各渠道的具体接收对象，供上方策略调用</span>
+                                    </div>
+                                    
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <!-- 手机号配置 -->
+                                        <div class="border border-slate-200 rounded-xl p-5 bg-white shadow-sm hover:shadow-md transition-shadow">
+                                            <div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-100">
+                                                <span class="text-sm font-bold text-slate-700 flex items-center gap-2">
+                                                    <div class="p-1.5 bg-green-100 text-green-600 rounded-md">
+                                                        <i data-lucide="smartphone" class="w-4 h-4"></i>
+                                                    </div>
+                                                    短信接收手机
+                                                </span>
+                                                <button @click="addPhoneNumber()" class="text-blue-600 text-xs font-medium hover:bg-blue-50 px-2 py-1 rounded transition-colors">添加号码</button>
+                                            </div>
+                                            <div class="flex flex-wrap gap-2 min-h-[40px]">
+                                                <template x-for="(num, idx) in editingOrg.receiveConfig.resources.smsNumbers">
+                                                    <span class="inline-flex items-center gap-1.5 px-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600 font-medium">
+                                                        <span x-text="num"></span>
+                                                        <button @click="removePhoneNumber(idx)" class="hover:text-red-500 text-slate-400 transition-colors"><i data-lucide="x" class="w-3 h-3"></i></button>
+                                                    </span>
+                                                </template>
+                                                <span x-show="editingOrg.receiveConfig.resources.smsNumbers.length === 0" class="text-xs text-slate-400 italic py-2 w-full text-center bg-slate-50/50 rounded-lg">未配置手机号</span>
+                                            </div>
+                                        </div>
+
+                                        <!-- 微信群配置 -->
+                                        <div class="border border-slate-200 rounded-xl p-5 bg-white shadow-sm hover:shadow-md transition-shadow">
+                                            <div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-100">
+                                                <span class="text-sm font-bold text-slate-700 flex items-center gap-2">
+                                                    <div class="p-1.5 bg-blue-100 text-blue-600 rounded-md">
+                                                        <i data-lucide="users" class="w-4 h-4"></i>
+                                                    </div>
+                                                微信群
+                                                </span>
+                                                <button @click="addGroup()" class="text-blue-600 text-xs font-medium hover:bg-blue-50 px-2 py-1 rounded transition-colors">绑定群组</button>
+                                            </div>
+                                            <div class="space-y-2 min-h-[40px]">
+                                                <template x-for="(group, idx) in editingOrg.receiveConfig.resources.groups">
+                                                    <div class="flex items-center justify-between text-xs bg-slate-50 px-3 py-2 rounded-lg border border-slate-100 group hover:border-blue-200 transition-colors">
+                                                        <div class="flex items-center gap-2.5">
+                                                            <span class="w-5 h-5 flex items-center justify-center rounded text-[10px] text-white font-bold shadow-sm" :class="group.type === 'WeChat' ? 'bg-green-500' : 'bg-blue-400'" x-text="group.type === 'WeChat' ? '企' : '钉'"></span>
+                                                            <span class="font-medium text-slate-700" x-text="group.name"></span>
+                                                        </div>
+                                                        <button @click="removeGroup(idx)" class="text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-all"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                                                    </div>
+                                                </template>
+                                                <span x-show="editingOrg.receiveConfig.resources.groups.length === 0" class="text-xs text-slate-400 italic py-2 block text-center bg-slate-50/50 rounded-lg">未绑定群组</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    
+                                    <!-- 微信服务号 -->
+                                    <div class="mt-6 border border-slate-200 rounded-xl p-5 bg-white shadow-sm hover:shadow-md transition-shadow">
+                                        <div class="flex justify-between items-center mb-4 pb-3 border-b border-slate-100">
+                                            <span class="text-sm font-bold text-slate-700 flex items-center gap-2">
+                                                <div class="p-1.5 bg-indigo-100 text-indigo-600 rounded-md">
+                                                    <i data-lucide="smartphone" class="w-4 h-4"></i>
+                                                </div>
+                                                微信接收人员
+                                            </span>
+                                            <button class="text-blue-600 text-xs font-medium hover:bg-blue-50 px-2 py-1 rounded transition-colors">从通讯录同步</button>
+                                        </div>
+                                        <div class="flex flex-wrap gap-3">
+                                            <template x-for="user in editingOrg.receiveConfig.resources.appUsers">
+                                                <div class="flex items-center gap-3 bg-slate-50 px-4 py-2 rounded-lg border border-slate-200 hover:bg-white hover:border-blue-200 hover:shadow-sm transition-all">
+                                                    <div class="w-6 h-6 rounded-full bg-gradient-to-br from-blue-100 to-indigo-100 text-blue-600 flex items-center justify-center text-[10px] font-bold" x-text="user.name.substring(0,1)"></div>
+                                                    <div class="flex flex-col">
+                                                        <span class="text-xs font-medium text-slate-700" x-text="user.name"></span>
+                                                        <span class="text-[10px] text-slate-400" x-text="user.role"></span>
+                                                    </div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </div>
+
+                            </div>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 弹窗：职能部门切换二次确认 (保持不变) -->
+        <div x-show="showConfirmModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm" x-cloak>
+            <div class="glass-card rounded-2xl shadow-2xl w-full max-w-sm p-6 transform transition-all scale-100" @click.away="cancelDeptChange()">
+                <div class="flex items-start gap-4">
+                    <div class="flex-shrink-0 w-12 h-12 rounded-full bg-yellow-50 flex items-center justify-center shadow-sm">
+                        <i data-lucide="alert-triangle" class="w-6 h-6 text-yellow-600"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-lg font-bold text-slate-900">确认切换部门？</h3>
+                        <div class="mt-2">
+                            <p class="text-sm text-slate-500 leading-relaxed">
+                                切换到 <span class="font-bold text-slate-800" x-text="tempDepartment"></span> 将自动加载默认模板，并<span class="text-red-500 font-medium">覆盖</span>当前已编辑的所有等级配置。此操作无法撤销。
+                            </p>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-8 flex justify-end gap-3">
+                    <button @click="cancelDeptChange()" class="btn-secondary px-4 py-2 rounded-lg text-sm font-medium">
+                        取消
+                    </button>
+                    <button @click="confirmDeptChange()" class="btn-primary text-white px-4 py-2 rounded-lg text-sm font-medium">
+                        确认覆盖
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 规则库选择弹窗 (保持不变) -->
+        <div x-show="showLibraryModal" class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm" x-cloak>
+            <div class="glass-card rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col max-h-[80vh] overflow-hidden transform transition-all" @click.away="showLibraryModal = false">
+                <!-- Header -->
+                <div class="px-6 py-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                    <h3 class="text-lg font-bold text-slate-800" x-text="editingRuleType === 'event' ? '添加事件类型规则' : '添加风险特征规则'"></h3>
+                    <button @click="showLibraryModal = false" class="text-slate-400 hover:text-slate-600 transition-colors">
+                        <i data-lucide="x" class="w-5 h-5"></i>
+                    </button>
+                </div>
+
+                <!-- Body: Split Layout -->
+                <div class="flex flex-1 overflow-hidden bg-white">
+                    <!-- Left: Categories (Tabs) -->
+                    <div class="w-48 bg-slate-50 border-r border-slate-100 overflow-y-auto">
+                        <ul class="py-2">
+                            <template x-for="tab in currentLibraryTabs">
+                                <li @click="activeLibraryTab = tab.name" 
+                                    class="px-5 py-3.5 text-sm cursor-pointer border-l-4 transition-all"
+                                    :class="activeLibraryTab === tab.name ? 'border-blue-600 bg-white font-bold text-blue-600 shadow-sm' : 'border-transparent text-slate-600 hover:bg-slate-100/50'">
+                                    <span x-text="tab.name"></span>
+                                </li>
+                            </template>
+                        </ul>
+                    </div>
+
+                    <!-- Right: Items -->
+                    <div class="flex-1 p-6 overflow-y-auto">
+                        <div class="flex items-center justify-between mb-5">
+                            <div class="flex items-center gap-4">
+                                <span class="text-sm font-bold text-slate-800" x-text="activeLibraryTab"></span>
+                                <!-- 全选/全不选功能 -->
+                                <label class="flex items-center gap-2 cursor-pointer select-none group">
+                                    <input type="checkbox" 
+                                           class="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500 transition-all"
+                                           :checked="isAllSelected"
+                                           @change="toggleSelectAll()">
+                                    <span class="text-xs text-slate-500 group-hover:text-blue-600 transition-colors">全选/全不选</span>
+                                </label>
+                            </div>
+                            <span class="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded">已选 <span x-text="tempSelectedItems.length" class="text-blue-600 font-bold"></span> 项</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <template x-for="item in currentTabItems">
+                                <label class="flex items-center p-3 border rounded-xl cursor-pointer transition-all duration-200"
+                                       :class="tempSelectedItems.includes(item) ? 'bg-blue-50/50 border-blue-500 shadow-sm' : 'border-slate-200 hover:border-blue-200 hover:bg-slate-50'">
+                                    <input type="checkbox" class="w-4 h-4 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                                           :checked="tempSelectedItems.includes(item)"
+                                           @change="toggleLibraryItem(item)">
+                                    <span class="ml-2.5 text-sm text-slate-700" x-text="item"></span>
+                                </label>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Footer -->
+                <div class="px-6 py-4 border-t border-slate-100 bg-slate-50/50 flex justify-end gap-3">
+                    <button @click="showLibraryModal = false" class="btn-secondary px-5 py-2 rounded-lg text-sm font-medium">取消</button>
+                    <button @click="saveLibrarySelection()" class="btn-primary text-white px-5 py-2 rounded-lg text-sm font-medium shadow-lg shadow-blue-500/30">确认添加</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast -->
+        <div x-show="showToast" class="fixed bottom-8 right-8 z-50 glass-card bg-slate-800/90 text-white px-6 py-4 rounded-xl shadow-2xl flex items-center gap-4 transform transition-all" x-cloak>
+            <div class="p-1 bg-green-500/20 rounded-full">
+                <i data-lucide="check-circle" class="w-5 h-5 text-green-400"></i>
+            </div>
+            <span x-text="toastMessage" class="font-medium"></span>
+        </div>
+
+    </main>
+
+</body>
+</html>
